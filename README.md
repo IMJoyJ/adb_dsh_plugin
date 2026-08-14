@@ -8,6 +8,10 @@
 | --- | --- |
 | `adb_devices` | 列出设备、连接状态、型号和 transport id |
 | `adb_device_info` | 获取 Android 版本、SDK、ABI、屏幕及电池信息 |
+| `adb_packages` | 结构化列出应用，可按系统/第三方、启用状态和用户筛选，并返回 APK 路径、版本码、安装来源及 UID |
+| `adb_system_services` | 列出 Binder 服务及支持 `dumpsys` 的系统服务 |
+| `adb_service_dump` | 读取单个系统服务的有界 `dumpsys` 状态快照 |
+| `adb_app_info` | 获取应用版本、APK 路径、权限状态及 activity/service/receiver/provider 组件 |
 | `adb_screenshot` | 截屏并通过 Harness 附件服务把 PNG 交给支持图片输入的模型 |
 | `adb_ui_hierarchy` | 获取包含文本、resource id、可点击状态和 bounds 的 UI XML；`uiautomator` 不可用时自动读取可见窗口 View 数据；文本模型也可使用 |
 | `adb_input` | 点击、滑动、安全 ASCII 文本输入及 keyevent |
@@ -37,7 +41,7 @@ pnpm build
 pnpm test:device
 ```
 
-它会测试设备发现、设备信息、UI 层级、截图、无副作用按键码、应用列表、日志，以及一次位于 `/data/local/tmp/adb_dsh_plugin_function_test.txt` 的文件 push/pull 往返；测试结束会自动清理宿主机和设备上的临时文件。请只在允许测试的设备上运行。
+它会测试设备发现、设备信息、UI 层级、截图、无副作用按键码、结构化应用信息、权限与四大组件、系统服务、日志，以及一次位于 `/data/local/tmp/adb_dsh_plugin_function_test.txt` 的文件 push/pull 往返；测试结束会自动清理宿主机和设备上的临时文件。请只在允许测试的设备上运行。
 
 有两种加载方式。
 
@@ -107,12 +111,26 @@ pnpm dsh plugin --profile web remove adb-dsh-plugin
 
 `allowedSerials: []` 表示允许所有 ADB 可见设备。`restrictHostPathsToWorkspace: true` 会解析真实路径并拒绝通过绝对路径、`..` 或符号链接访问会话工作区外的宿主机文件。`adb_app` 的 `clear_data` 和 `uninstall` 只有在 `enableDestructiveActions: true` 时才执行。
 
+`adb_packages`、`adb_system_services`、`adb_service_dump` 和 `adb_app_info` 都是只读工具，不依赖 `enableShell` 或 `enableAppManagement`。`adb_app_info` 默认返回适合模型直接使用的结构化字段；确实需要 Package Manager 的其他细节时，可传 `includeRawDump: true`，原始输出仍受 `maxOutputBytes` 限制并通过 `truncated` 标记截断。
+
 ## 验证提示词
 
 连接并授权设备后，可在 Web UI 中依次尝试：
 
 ```text
 调用 adb_devices 列出设备，然后读取唯一在线设备的系统、屏幕和电池信息。
+```
+
+```text
+调用 adb_packages 列出第三方应用，返回每个应用的包名、版本码、安装来源和 APK 路径，不要修改设备。
+```
+
+```text
+调用 adb_app_info 查看 com.example.app：汇总申请的权限及其授权状态，并分别列出 activity、service、broadcast receiver 和 content provider。
+```
+
+```text
+先用 adb_system_services 查找 package 服务，再用 adb_service_dump 查看它的当前状态，只做读取。
 ```
 
 ```text

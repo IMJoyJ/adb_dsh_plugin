@@ -6,6 +6,13 @@ import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
+import {
+  parseAppInspection,
+  parseBinderServices,
+  parseDumpsysServices,
+  parseInstalledPackages,
+  parsePackagePaths,
+} from './inspection.js'
 import { extractUiHierarchy, parseAdbDevices, parseGetProp, takeLastTextLines } from './parsers.js'
 import type { AdbDevice } from './parsers.js'
 import { resolveHostPath } from './paths.js'
@@ -170,8 +177,9 @@ function validateCoordinate(name: string, value: number | undefined): number {
   return value
 }
 
-function validatePackageName(value: string | undefined): string {
-  if (value === undefined || !/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/u.test(value)) {
+function validatePackageName(value: string | undefined, allowAndroidFramework = false): string {
+  const isFrameworkPackage = allowAndroidFramework && value === 'android'
+  if (value === undefined || (!isFrameworkPackage && !/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/u.test(value))) {
     throw new Error('packageName must be a valid Android application id')
   }
   return value
@@ -267,6 +275,254 @@ function registerDeviceInfoTool(ctx: Context, config: ResolvedConfig): void {
       }
     },
     presentCall: args => ({ card: 'generic', title: `Inspect Android device${args.serial === undefined ? '' : ` ${args.serial}`}`, kind: 'read' }),
+  }))
+}
+
+function registerPackagesTool(ctx: Context, config: ResolvedConfig): void {
+  ctx.tools.register(defineTool({
+    name: 'adb_packages',
+    description: 'Collect a structured list of installed Android packages, including APK path, version code, installer, and UID when Android exposes them. Supports system/third-party and enabled/disabled filters.',
+    parameters: {
+      serial: SERIAL_PARAMETER,
+      scope: { type: 'string', enum: ['all', 'system', 'third_party'], description: 'Package origin filter; defaults to all.' },
+      state: { type: 'string', enum: ['all', 'enabled', 'disabled'], description: 'Package enabled-state filter; defaults to all.' },
+      includeUninstalled: { type: 'boolean', description: 'Also include packages retained for the user after uninstall.' },
+      user: { type: 'integer', description: 'Optional non-negative Android user id.' },
+      filter: { type: 'string', description: 'Optional package-name substring filter passed to Package Manager as one argument.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          serial: { type: 'string', required: true },
+          packages: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                packageName: { type: 'string', required: true },
+                apkPath: { type: 'string' },
+                versionCode: { type: 'string' },
+                installer: { type: 'string' },
+                uid: { type: 'string' },
+              },
+            },
+          },
+          truncated: { type: 'boolean', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    timeoutMs: config.commandTimeoutMs,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      if (args.user !== undefined && (!Number.isSafeInteger(args.user) || args.user < 0 || args.user > 2_147_483_647)) {
+        throw new Error('user must be a non-negative 32-bit integer')
+      }
+      if (args.filter !== undefined && (args.filter.length === 0 || args.filter.includes('\0'))) {
+        throw new Error('filter must be non-empty and contain no NUL bytes')
+      }
+      const scope = args.scope ?? 'all'
+      const state = args.state ?? 'all'
+      const argv = [
+        'shell', 'pm', 'list', 'packages', '-f', '-i', '-U', '--show-versioncode',
+        ...(scope === 'system' ? ['-s'] : scope === 'third_party' ? ['-3'] : []),
+        ...(state === 'enabled' ? ['-e'] : state === 'disabled' ? ['-d'] : []),
+        ...(args.includeUninstalled === true ? ['-u'] : []),
+        ...(args.user === undefined ? [] : ['--user', String(args.user)]),
+        ...(args.filter === undefined ? [] : [args.filter]),
+      ]
+      const { serial, result } = await runForDevice(ctx, config, exec, args.serial, argv)
+      assertSuccess(result, 'list Android packages')
+      return { serial, packages: parseInstalledPackages(result.stdout), truncated: result.stdoutTruncated }
+    },
+    presentCall: () => ({ card: 'generic', title: 'Inspect installed Android packages', kind: 'read' }),
+  }))
+}
+
+function registerSystemServicesTool(ctx: Context, config: ResolvedConfig): void {
+  ctx.tools.register(defineTool({
+    name: 'adb_system_services',
+    description: 'List Android Binder services and services that support dumpsys. Use adb_service_dump with one dumpsys service name to inspect its current state.',
+    parameters: {
+      serial: SERIAL_PARAMETER,
+      kind: { type: 'string', enum: ['both', 'binder', 'dumpsys'], description: 'Service registry to query; defaults to both.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          serial: { type: 'string', required: true },
+          binderServices: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                index: { type: 'integer', required: true },
+                name: { type: 'string', required: true },
+                descriptor: { type: 'string' },
+              },
+            },
+          },
+          dumpsysServices: { type: 'array', items: { type: 'string' }, required: true },
+          truncated: { type: 'boolean', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    timeoutMs: config.commandTimeoutMs,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const cwd = workdir(exec)
+      const serial = await selectSerial(ctx, config, cwd, args.serial, exec.signal)
+      const prefix = serialArgv(serial)
+      const kind = args.kind ?? 'both'
+      const [binderResult, dumpsysResult] = await Promise.all([
+        kind === 'dumpsys' ? undefined : runAdbText(ctx, config, cwd, [...prefix, 'shell', 'service', 'list'], exec.signal),
+        kind === 'binder' ? undefined : runAdbText(ctx, config, cwd, [...prefix, 'shell', 'dumpsys', '-l'], exec.signal),
+      ])
+      if (binderResult !== undefined) assertSuccess(binderResult, 'list Android Binder services')
+      if (dumpsysResult !== undefined) assertSuccess(dumpsysResult, 'list Android dumpsys services')
+      return {
+        serial,
+        binderServices: binderResult === undefined ? [] : parseBinderServices(binderResult.stdout),
+        dumpsysServices: dumpsysResult === undefined ? [] : parseDumpsysServices(dumpsysResult.stdout),
+        truncated: binderResult?.stdoutTruncated === true || dumpsysResult?.stdoutTruncated === true,
+      }
+    },
+    presentCall: () => ({ card: 'generic', title: 'List Android system services', kind: 'read' }),
+  }))
+}
+
+function registerServiceDumpTool(ctx: Context, config: ResolvedConfig): void {
+  ctx.tools.register(defineTool({
+    name: 'adb_service_dump',
+    description: 'Read a bounded dumpsys snapshot for one Android system service. First use adb_system_services to discover valid service names.',
+    parameters: {
+      serial: SERIAL_PARAMETER,
+      service: { type: 'string', required: true, description: 'Exact service name from adb_system_services.dumpsysServices.' },
+    },
+    output: { schema: COMMAND_OUTPUT_SCHEMA, render: (_args, value) => [{ type: 'text', text: renderCommand(value) }] },
+    timeoutMs: config.commandTimeoutMs,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      if (!/^[A-Za-z0-9_.:/@-]+$/u.test(args.service)) throw new Error('service contains unsupported characters')
+      const { serial, result } = await runForDevice(ctx, config, exec, args.serial, ['shell', 'dumpsys', args.service])
+      assertSuccess(result, `dump Android service ${args.service}`)
+      return commandValue(serial, result)
+    },
+    presentCall: args => ({ card: 'generic', title: `Inspect Android service ${args.service}`, kind: 'read' }),
+  }))
+}
+
+function registerAppInfoTool(ctx: Context, config: ResolvedConfig): void {
+  ctx.tools.register(defineTool({
+    name: 'adb_app_info',
+    description: 'Collect structured package metadata, requested/install/runtime permission states, and all declared activity, service, broadcast receiver, and content provider components for one installed Android app.',
+    parameters: {
+      serial: SERIAL_PARAMETER,
+      packageName: { type: 'string', required: true, description: 'Installed Android application id.' },
+      includeRawDump: { type: 'boolean', description: 'Include the bounded raw Package Manager dump for details not represented by structured fields.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          serial: { type: 'string', required: true },
+          packageName: { type: 'string', required: true },
+          apkPaths: { type: 'array', items: { type: 'string' }, required: true },
+          summary: {
+            type: 'object',
+            additionalProperties: false,
+            required: true,
+            properties: {
+              versionName: { type: 'string' },
+              versionCode: { type: 'string' },
+              minSdk: { type: 'string' },
+              targetSdk: { type: 'string' },
+              appId: { type: 'string' },
+              codePath: { type: 'string' },
+              dataDir: { type: 'string' },
+              primaryCpuAbi: { type: 'string' },
+              secondaryCpuAbi: { type: 'string' },
+              firstInstallTime: { type: 'string' },
+              lastUpdateTime: { type: 'string' },
+              installerPackageName: { type: 'string' },
+            },
+          },
+          requestedPermissions: { type: 'array', items: { type: 'string' }, required: true },
+          permissionStates: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                name: { type: 'string', required: true },
+                scope: { type: 'string', enum: ['install', 'runtime'], required: true },
+                granted: { type: 'boolean', required: true },
+                flags: { type: 'array', items: { type: 'string' }, required: true },
+                userId: { type: 'integer' },
+              },
+            },
+          },
+          components: {
+            type: 'object',
+            additionalProperties: false,
+            required: true,
+            properties: {
+              activities: { type: 'array', items: { type: 'string' }, required: true },
+              services: { type: 'array', items: { type: 'string' }, required: true },
+              receivers: { type: 'array', items: { type: 'string' }, required: true },
+              providers: { type: 'array', items: { type: 'string' }, required: true },
+            },
+          },
+          disabledComponents: { type: 'array', items: { type: 'string' }, required: true },
+          enabledComponents: { type: 'array', items: { type: 'string' }, required: true },
+          rawDump: { type: 'string' },
+          truncated: { type: 'boolean', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    timeoutMs: config.commandTimeoutMs,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const packageName = validatePackageName(args.packageName, true)
+      const cwd = workdir(exec)
+      const serial = await selectSerial(ctx, config, cwd, args.serial, exec.signal)
+      const prefix = serialArgv(serial)
+      let [dumpResult, pathResult] = await Promise.all([
+        runAdbText(ctx, config, cwd, [...prefix, 'shell', 'dumpsys', 'package', '--all-components', packageName], exec.signal),
+        runAdbText(ctx, config, cwd, [...prefix, 'shell', 'pm', 'path', packageName], exec.signal),
+      ])
+      if (/Unknown argument: --all-components|Unknown option.*all-components/iu.test(`${dumpResult.stdout}\n${dumpResult.stderr}`)) {
+        dumpResult = await runAdbText(ctx, config, cwd, [...prefix, 'shell', 'dumpsys', 'package', packageName], exec.signal)
+      }
+      assertSuccess(dumpResult, `inspect Android package ${packageName}`)
+      assertSuccess(pathResult, `read APK paths for Android package ${packageName}`)
+      const apkPaths = parsePackagePaths(pathResult.stdout)
+      if (apkPaths.length === 0 || /Unable to find package|not found/iu.test(dumpResult.stdout)) {
+        throw new Error(`Android package ${JSON.stringify(packageName)} is not installed or is not visible to the ADB shell user`)
+      }
+      const parsed = parseAppInspection(dumpResult.stdout, packageName)
+      return {
+        serial,
+        packageName,
+        apkPaths,
+        ...parsed,
+        ...(args.includeRawDump === true ? { rawDump: dumpResult.stdout } : {}),
+        truncated: dumpResult.stdoutTruncated || pathResult.stdoutTruncated,
+      }
+    },
+    presentCall: args => ({ card: 'generic', title: `Inspect Android app ${args.packageName}`, kind: 'read' }),
   }))
 }
 
@@ -659,6 +915,10 @@ function registerLogcatTool(ctx: Context, config: ResolvedConfig): void {
 export function registerAdbTools(ctx: Context, config: ResolvedConfig): void {
   registerDevicesTool(ctx, config)
   registerDeviceInfoTool(ctx, config)
+  registerPackagesTool(ctx, config)
+  registerSystemServicesTool(ctx, config)
+  registerServiceDumpTool(ctx, config)
+  registerAppInfoTool(ctx, config)
   registerShellTool(ctx, config)
   registerScreenshotTool(ctx, config)
   registerUiHierarchyTool(ctx, config)

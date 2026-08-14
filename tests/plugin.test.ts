@@ -40,6 +40,10 @@ test('apply registers the safe default tool set without arbitrary shell', () => 
   assert.deepEqual(registered(BASE_CONFIG), [
     'adb_devices',
     'adb_device_info',
+    'adb_packages',
+    'adb_system_services',
+    'adb_service_dump',
+    'adb_app_info',
     'adb_screenshot',
     'adb_ui_hierarchy',
     'adb_input',
@@ -59,7 +63,16 @@ test('apply gates optional tools through configuration', () => {
     enableAppManagement: false,
     enableFileTransfer: false,
   })
-  assert.deepEqual(names, ['adb_devices', 'adb_device_info', 'adb_shell', 'adb_logcat'])
+  assert.deepEqual(names, [
+    'adb_devices',
+    'adb_device_info',
+    'adb_packages',
+    'adb_system_services',
+    'adb_service_dump',
+    'adb_app_info',
+    'adb_shell',
+    'adb_logcat',
+  ])
 })
 
 test('apply rejects unsafe numeric configuration', () => {

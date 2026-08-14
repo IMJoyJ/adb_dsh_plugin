@@ -120,9 +120,37 @@ async function main(): Promise<void> {
     const input = await call('adb_input', { serial, action: 'keyevent', keyCode: 'KEYCODE_UNKNOWN' }) as { exitCode: number }
     assert.equal(input.exitCode, 0)
 
-    const packages = await call('adb_app', { serial, action: 'list_packages', thirdPartyOnly: true }) as { stdout: string; exitCode: number }
-    assert.equal(packages.exitCode, 0)
-    assert.match(packages.stdout, /(?:^|\n)package:/u)
+    const packages = await call('adb_packages', { serial, scope: 'all', filter: 'com.android.settings' }) as {
+      packages: Array<{ packageName: string; apkPath?: string }>
+      truncated: boolean
+    }
+    assert.ok(packages.packages.some(item => item.packageName === 'com.android.settings'))
+
+    const appInfo = await call('adb_app_info', { serial, packageName: 'com.android.settings' }) as {
+      requestedPermissions: string[]
+      components: { activities: string[]; services: string[]; receivers: string[]; providers: string[] }
+      apkPaths: string[]
+      truncated: boolean
+    }
+    assert.ok(appInfo.apkPaths.length > 0)
+    assert.ok(appInfo.requestedPermissions.length > 0)
+    assert.ok(appInfo.components.activities.length > 0)
+
+    const services = await call('adb_system_services', { serial, kind: 'both' }) as {
+      binderServices: Array<{ name: string }>
+      dumpsysServices: string[]
+      truncated: boolean
+    }
+    assert.ok(services.binderServices.length > 0)
+    assert.ok(services.dumpsysServices.includes('package'))
+
+    const packageService = await call('adb_service_dump', { serial, service: 'package' }) as {
+      stdout: string
+      exitCode: number
+      stdoutTruncated: boolean
+    }
+    assert.equal(packageService.exitCode, 0)
+    assert.ok(packageService.stdout.length > 0)
 
     const logcat = await call('adb_logcat', { serial, lines: 20 }) as { stdout: string; exitCode: number; stdoutTruncated: boolean }
     assert.equal(logcat.exitCode, 0)
@@ -152,7 +180,19 @@ async function main(): Promise<void> {
         ? { ok: false, error: hierarchyError }
         : { ok: true, source: hierarchy.source, truncated: hierarchy.truncated, bytes: Buffer.byteLength(hierarchy.xml) },
       screenshot: screenshot.image,
-      thirdPartyPackageLines: packages.stdout.split(/\r?\n/u).filter(Boolean).length,
+      packageInspection: {
+        listed: packages.packages.length,
+        apkPaths: appInfo.apkPaths.length,
+        requestedPermissions: appInfo.requestedPermissions.length,
+        components: Object.fromEntries(Object.entries(appInfo.components).map(([kind, entries]) => [kind, entries.length])),
+        truncated: packages.truncated || appInfo.truncated,
+      },
+      systemServices: {
+        binder: services.binderServices.length,
+        dumpsys: services.dumpsysServices.length,
+        packageDumpBytes: Buffer.byteLength(packageService.stdout),
+        truncated: services.truncated || packageService.stdoutTruncated,
+      },
       logcatBytes: Buffer.byteLength(logcat.stdout),
       logcatPhysicalLines: logcat.stdout.split(/\r?\n/u).filter((_, index, rows) => index < rows.length - 1 || rows[index] !== '').length,
       logcatTruncated: logcat.stdoutTruncated,
