@@ -1,0 +1,5 @@
+- insert:
+    - id: adb-tools
+      name: '/absolute/path/to/adb_dsh_plugin/src/index.ts'
+      config:
+        enableShell: false

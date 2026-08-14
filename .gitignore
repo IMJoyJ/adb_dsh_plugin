@@ -1,0 +1,5 @@
+lib/
+node_modules/
+cordis.dev.yml
+*.tgz
+.DS_Store

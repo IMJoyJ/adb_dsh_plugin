@@ -1,0 +1,3 @@
+- insert:
+    - id: adb-tools
+      name: adb-dsh-plugin
