@@ -623,7 +623,8 @@ interface ScreenshotValue {
   serial: string
   image: {
     attachmentId: string
-    mediaType: 'image/png'
+    /** Actual stored format — normalization may re-encode the PNG source to WebP/JPEG. */
+    mediaType: ImageAttachmentRef['mediaType']
     bytes: number
     width: number
     height: number
@@ -642,7 +643,7 @@ function registerScreenshotTool(ctx: Context, config: ResolvedConfig): void {
   if (!config.enableScreenshots) return
   ctx.tools.register(defineTool({
     name: 'adb_screenshot',
-    description: 'Capture the selected Android device display and return the PNG image to an image-capable model. For a text-only model, use adb_ui_hierarchy instead.',
+    description: 'Capture the selected Android device display and return the screenshot image to an image-capable model (attachment normalization may re-encode it as WebP/JPEG; the returned mediaType is authoritative). For a text-only model, use adb_ui_hierarchy instead.',
     parameters: { serial: SERIAL_PARAMETER },
     output: {
       schema: {
@@ -656,7 +657,7 @@ function registerScreenshotTool(ctx: Context, config: ResolvedConfig): void {
             required: true,
             properties: {
               attachmentId: { type: 'string', required: true },
-              mediaType: { type: 'string', const: 'image/png', required: true },
+              mediaType: { type: 'string', enum: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'], required: true },
               bytes: { type: 'integer', required: true },
               width: { type: 'integer', required: true },
               height: { type: 'integer', required: true },
@@ -692,7 +693,7 @@ function registerScreenshotTool(ctx: Context, config: ResolvedConfig): void {
         serial,
         image: {
           attachmentId: ref.attachmentId,
-          mediaType: 'image/png',
+          mediaType: ref.mediaType,
           bytes: ref.bytes,
           width: ref.width,
           height: ref.height,
