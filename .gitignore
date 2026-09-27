@@ -1,5 +1,7 @@
 lib/
 node_modules/
 cordis.dev.yml
+pnpm-lock.yaml
+pnpm-workspace.yaml
 *.tgz
 .DS_Store
