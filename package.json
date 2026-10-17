@@ -49,10 +49,10 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-attachment": "^0.1.0-rc.5",
-    "@deepseek-ai/dsh-llm": "^0.1.0-rc.5",
-    "@deepseek-ai/dsh-subprocess": "^0.1.0-rc.5",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.5"
+    "@deepseek-ai/dsh-attachment": "^0.1.0-rc.5 || >=0.2.0-0 <0.3.0",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.5 || >=0.2.0-0 <0.3.0",
+    "@deepseek-ai/dsh-subprocess": "^0.1.0-rc.5 || >=0.2.0-0 <0.3.0",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.5 || >=0.2.0-0 <0.3.0"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-attachment-local": "^0.1.0-rc.5",
